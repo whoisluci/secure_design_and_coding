@@ -1,0 +1,917 @@
+\documentclass{article}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{fancyhdr}
+\usepackage{geometry}
+\geometry{margin=1in}
+\pagestyle{fancy}
+\fancyhf{}
+\rhead{Information Security \\ Fall 2025}
+\rfoot{Page \thepage}
+
+\title{Information Security \\ Secure Coding}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\section{Python}
+
+\subsection{SQL Injection}
+SQL injection occurs when user input is directly embedded into SQL queries, which is why I chose to patch the code by adding placeholders into the SQL query.
+
+\subsubsection{Vulnerable Code}
+\begin{lstlisting}[language=Python, caption=SQL Injection - Vulnerable Example,
+basicstyle=\ttfamily\small, backgroundcolor=\color{gray!10}]
+@app.route('/Login', methods=['GET', 'POST'])
+def login():
+    error = None
+    if request.method == 'POST':
+        username = request.form.get('username', '')
+        password = request.form.get('password', '')
+        db = get_db()
+        cur = db.cursor()
+        # VULNERABILITY
+        query = "SELECT * FROM users WHERE username = '" + username + "' 
+        AND password = '" + password + "'"
+        try:
+            cur.execute(query)
+            user = cur.fetchone()
+            if user:
+                session['user_id'] = user['id']
+                session['username'] = user['username']
+                return redirect(url_for('profile'))
+            else:
+                error = 'Login failed'
+        except Exception as e:
+            error = f'SQL error: {e}'
+    return render_template('login.html', error=error)
+\end{lstlisting}
+
+\subsubsection{Safe Code}
+\begin{lstlisting}[language=Python, caption=SQL Injection - Safe Example, basicstyle=\ttfamily\small, backgroundcolor=\color{gray!10}]
+@app.route('/Login', methods=['GET', 'POST'])
+def login():
+    error = None
+    if request.method == 'POST':
+        username = request.form.get('username', '')
+        password = request.form.get('password', '')
+        db = get_db()
+        cur = db.cursor()
+        # SAFE
+        query = "SELECT * FROM users WHERE username = ? AND password = ?"
+        try:
+            cur.execute(query, (username, password))
+            user = cur.fetchone()
+            if user:
+                session['user_id'] = user['id']
+                session['username'] = user['username']
+                return redirect(url_for('profile'))
+            else:
+                error = 'Login failed'
+        except Exception as e:
+            error = f'SQL error: {e}'
+    return render_template('login.html', error=error)
+\end{lstlisting}
+
+\subsection{Cross Site Scripting}
+Storing direct user input in the database and then retrieving and rendering it without escaping allows the user to indirectly execute HTML and JavaScript code in the browser. I have therefore chosen to remove \texttt{| safe} to properly escape the memo when rendering it.
+
+\subsubsection{Vulnerable Code}
+
+\begin{lstlisting}[language=Python, caption=Cross Site Scripting – Vulnerable Exammple, basicstyle=\ttfamily\small, backgroundcolor=\color{gray!10}]
+
+<h2>Recent Memos</h2>
+{% if memos %}
+    <div class="memo-list">
+        {% for memo in memos %}
+            <article class="memo-item">
+                {% if memo["created_at"] %}
+                <div class="memo-header">
+                    <time class="memo-timestamp" datetime="{{ memo['created_at'] 
+                    }}">{{ memo["created_at"] }}</time>
+                </div>
+                {% endif %}
+                # VULNERABILITY
+                <div class="memo-body">{{ memo["content"]|safe }}</div>
+            </article>
+        {% endfor %}
+    </div>
+{% else %}
+    <p>No memos posted yet.</p>
+{% endif %}
+
+\end{lstlisting}
+
+\subsubsection{Safe Code}
+
+\begin{lstlisting}[language=Python, caption=Cross Site Scripting – Vulnerable Exammple, basicstyle=\ttfamily\small, backgroundcolor=\color{gray!10}]
+
+<h2>Recent Memos</h2>
+{% if memos %}
+    <div class="memo-list">
+        {% for memo in memos %}
+            <article class="memo-item">
+                {% if memo["created_at"] %}
+                <div class="memo-header">
+                    <time class="memo-timestamp" 
+                    datetime="{{ memo['created_at'] }}">{{ memo["created_at"] }}
+                    </time>
+                </div>
+                {% endif %}
+                # SAFE
+                <div class="memo-body">{{ memo["content"] }}</div>
+            </article>
+        {% endfor %}
+    </div>
+{% else %}
+    <p>No memos posted yet.</p>
+{% endif %}
+
+\end{lstlisting}
+
+
+\subsection{SSRF}
+Server-side request forgery  allows users to make server fetches to any URL. Without validating the URL, the user could fetch internal resources that they normally should be unauthorized to access. Therefore, I have chosen to parse the URL into the scheme, hostname, port and path in order to validate each part of the URL before fetching. 
+
+\subsubsection{Vulnerable Code}
+\begin{lstlisting}[language=Python, caption=SSRF – Vulnerable Example, basicstyle=\ttfamily\small, backgroundcolor=\color{gray!10}]
+
+@app.route('/Fetch', methods=['GET', 'POST'])
+def fetch():
+    content = None
+    url = ''
+    if request.method == 'POST':
+        url = request.form.get('url', '')
+        try:
+        # VULNERABILITY
+            r = requests.get(url, timeout=10)
+            content = r.text[:4096]
+        except Exception as e:
+            content = f'Error: {e}'
+    return render_template('fetch.html', url=url, content=content)
+
+\end{lstlisting}
+
+\subsubsection{Safe Code}
+\begin{lstlisting}[language=Python, caption=SSRF – Vulnerable Example, basicstyle=\ttfamily\small, backgroundcolor=\color{gray!10}]
+
+def check_url(url):
+    try:
+        parsed = urlparse(url)
+        if parsed.scheme not in ['http', 'https']:
+            return False, 'Only HTTP and HTTPS protocols are allowed'
+        
+        hostname = parsed.hostname
+        if not hostname:
+            return False, 'Invalid URL'
+        
+        if hostname in ['localhost', '127.0.0.1', '0.0.0.0']:
+            return False, 'Unanouthorized hostname'
+        
+        ip = socket.gethostbyname(hostname)
+        ip_obj = ipaddress.ip_address(ip)
+
+        if ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local:
+            return False, 'Cannot access private or internal IP addresses'
+        
+        return True, 'OK'
+    except Exception as e:
+        return False, f'Invalid URL: {e}'
+
+@app.route('/Fetch', methods=['GET', 'POST'])
+def fetch():
+    content = None
+    url = ''
+    if request.method == 'POST':
+        url = request.form.get('url', '')
+
+        checked_url, err = check_url(url)
+        if not checked_url:
+            content = f'Security Error: {err}'
+        else:
+            try:
+                r = requests.get(url, timeout=10)
+                content = r.text[:4096]
+            except Exception as e:
+                content = f'Error: {e}'
+    return render_template('fetch.html', url=url, content=content)
+
+\end{lstlisting}
+
+\subsection{Command Injection}
+By disabling \texttt{shell=True}, special shell characters will not be interpreted and by implementing a command list we can make sure that only allowed commands are executed, while still being able to amplify it later if necessary.
+
+\subsubsection{Vulnerable Code}
+\begin{lstlisting}[language=Python, caption=Command Injection – Vulnerable Example, basicstyle=\ttfamily\small, backgroundcolor=\color{gray!10}]
+
+@app.route('/Ping', methods=['GET', 'POST']) def ping(): 
+    ip_address = '' 
+    result = None 
+    if request.method == 'POST': 
+        ip_address = request.form.get('ip', '') 
+        count_flag = '-n' if os.name == 'nt' else '-c' 
+        command = "ping " + count_flag + " 3 " + ip_address 
+        try: 
+            completed = subprocess.run( 
+                command, 
+                shell=True, # VULNERABILITY
+                capture_output=True, 
+                text=True, 
+                timeout=15, 
+            ) 
+            result = completed.stdout or completed.stderr 
+        except Exception as e: 
+            result = f'Error running command: {e}' 
+        return render_template('ping.html', ip=ip_address, result=result)
+
+\end{lstlisting}
+
+\subsubsection{Safe Code}
+\begin{lstlisting}[language=Python, caption=Command Injection – Safe Example, basicstyle=\ttfamily\small, backgroundcolor=\color{gray!10}]
+
+# SAFE
+COMMANDS = {
+    "ping": "ping"
+}
+
+@app.route('/Ping', methods=['GET', 'POST'])
+def ping():
+    ip_address = ''
+    result = None
+    if request.method == 'POST':
+        ip_address = request.form.get('ip', '')
+        count_flag = '-n' if os.name == 'nt' else '-c'
+        command = [COMMANDS['ping'], count_flag, "3", ip_address]
+        try:
+            completed = subprocess.run(
+                command,
+                shell=False, # SAFE
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            result = completed.stdout or completed.stderr
+        except Exception as e:
+            result = f'Error running command: {e}'
+    return render_template('ping.html', ip=ip_address, result=result)
+
+
+
+\end{lstlisting}
+
+\subsection{Local File Inclusion (Directory traversal)}
+I have ensured that the sanitation happens correctly as the vulnerable code only removed one occurrence of \texttt{../}, which could easily be bypassed. Moreover, I changed the sanitation to after the URL decoding, otherwise it could be bypassed by an user since encoded \texttt{../} will not be caught. 
+
+\subsubsection{Vulnerable Code}
+
+\begin{lstlisting}[language=Python, caption=Local File Inclusion – Vulnerable Example, basicstyle=\ttfamily\small, backgroundcolor=\color{gray!10}]
+
+@app.route('/ViewFile')
+def view_file():
+    raw = request.args.get('filename', '')
+    content = None
+    error = None
+    if raw:
+        # VULNERABILITY
+        sanitized = raw.replace('../', '', 1)
+        # VULNERABILITY
+        decoded = unquote(sanitized)
+        file_path = os.path.join(LOG_DIR, decoded + '.log')
+        if '\x00' in file_path:
+            file_path = file_path.split('\x00', 1)[0]
+        try:
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+        except Exception as e:
+            error = str(e)
+    return render_template('view.html', filename=raw, content=content, error=error)
+    
+\end{lstlisting}
+
+\subsubsection{Safe Code}
+
+\begin{lstlisting}[language=Python, caption=Local File Inclusion – Vulnerable Example, basicstyle=\ttfamily\small, backgroundcolor=\color{gray!10}]
+
+@app.route('/ViewFile')
+def view_file():
+    raw = request.args.get('filename', '')
+    content = None
+    error = None
+    if raw:
+        # SAFE
+        decoded = unquote(raw)
+        file_path = os.path.join(LOG_DIR, decoded + '.log')
+
+        file_path = os.path.abspath(file_path)
+        safe_dir = os.path.abspath(LOG_DIR)
+        
+        if not file_path.startswith(safe_dir + os.sep):
+            error = 'Access denied due to invalid file path'
+        else:
+            try:        
+                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    content = f.read()
+            except Exception as e:
+                error = str(e)
+    return render_template('view.html', filename=raw, content=content, error=error)
+
+\end{lstlisting}
+
+
+\section{C}
+
+\subsection{Buffer Overflow}
+Implemented bounds checking by replacing \texttt{gets()} with \texttt{fgets()} to ensure that the input length is checked. 
+\subsubsection{Vulnerable Code}
+
+\begin{lstlisting}[language=C, caption=Buffer Overflow – Vulnerable Example, basicstyle=\ttfamily\small, backgroundcolor=\color{gray!10}]
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+void func(){
+    char seceret[8] = "SECERET";
+    char buffer[8];
+    
+    printf("Seceret message : %s\n",seceret);
+    
+    printf("Input : ");
+    # VULNERABILITY
+    gets(buffer);
+
+    if (strcmp(seceret, "COSE354") == 0){
+        printf("Please patch this code!");
+    } else {
+        printf("Try again!");
+        exit(1);
+    }
+}
+
+int main(){
+    func();
+    return 0;
+}
+\end{lstlisting}
+
+\subsubsection{Safe Code}
+\begin{lstlisting}[language=C, caption=Buffer Overflow – Safe Example, basicstyle=\ttfamily\small, backgroundcolor=\color{gray!10}]
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+void func(){
+    char seceret[8] = "SECERET";
+    char buffer[8];
+    
+    printf("Seceret message : %s\n",seceret);
+    
+    printf("Input : ");
+    # SAFE CODE
+    fgets(buffer, 8, stdin);
+
+    if (strcmp(seceret, "COSE354") == 0){
+        printf("Please patch this code!");
+    } else {
+        printf("Try again!");
+        exit(1);
+    }
+}
+
+int main(){
+    func();
+    return 0;
+}
+\end{lstlisting}
+
+\subsubsection{Vulnerable Code}
+\begin{lstlisting}[language=C, caption=Buffer Overflow – Safe Example, basicstyle=\ttfamily\small, backgroundcolor=\color{gray!10}]
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+void func1(){
+    char buffer[8];
+    int i = 0;
+    char c;
+    
+    printf("Enter Input : ");
+    # VULNERABILITY
+    while((c = getchar()) != '\n' && c != EOF) {
+        buffer[i++] = c;
+    }
+    buffer[i] = '\0';
+    
+    printf("Input : %s\n", buffer);
+}
+\end{lstlisting}
+
+\subsubsection{Safe Code}
+\begin{lstlisting}[language=C, caption=Buffer Overflow – Safe Example, basicstyle=\ttfamily\small, backgroundcolor=\color{gray!10}]
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+void func1(){
+    char buffer[8];
+    int i = 0;
+    char c;
+    
+    printf("Enter Input : ");
+    # SAFE
+    while((c = getchar()) != '\n' && c != EOF && i < 7) {
+        buffer[i++] = c;
+    }
+    buffer[i] = '\0';
+    
+    printf("Input : %s\n", buffer);
+}
+\end{lstlisting}
+
+\subsubsection{Vulnerable Code}
+\begin{lstlisting}[language=C, caption=Buffer Overflow – Vulnerable Example, basicstyle=\ttfamily\small, backgroundcolor=\color{gray!10}]
+
+void func2(){
+    char buffer[8];
+    char input[10];
+    
+    printf("Enter Input : ");
+    fgets(input, sizeof(input), stdin);
+    # VULNERABILITY
+    sprintf(buffer, "User input: %s", input);
+    
+    printf("Input : %s\n", buffer);
+}
+\end{lstlisting}
+
+\subsubsection{Safe Code}
+\begin{lstlisting}[language=C, caption=Buffer Overflow – Vulnerable Example, basicstyle=\ttfamily\small, backgroundcolor=\color{gray!10}]
+void func2(){
+    char buffer[8];
+    char input[10];
+    
+    printf("Enter Input : ");
+    fgets(input, sizeof(input), stdin);
+    # SAFE
+    snprintf(buffer, sizeof(buffer), "User input: %s", input);
+    
+    printf("Input : %s\n", buffer);
+}
+\end{lstlisting}
+
+\subsubsection{Vulnerable Code}
+\begin{lstlisting}[language=C, caption=Buffer Overflow – Vulnerable Example, basicstyle=\ttfamily\small, backgroundcolor=\color{gray!10}]
+void func3(){
+    char buffer[8];
+    char input[10];
+    
+    printf("Enter Input : ");
+    scanf("%s",input);
+    # VULNERABILITY
+    strcpy(buffer, input);
+    
+    printf("Copied : %s\n", buffer);
+}
+\end{lstlisting}
+
+\subsubsection{Safe Code}
+\begin{lstlisting}[language=C, caption=Buffer Overflow – Vulnerable Example, basicstyle=\ttfamily\small, backgroundcolor=\color{gray!10}]
+void func3(){
+    char buffer[8];
+    char input[10];
+    
+    printf("Enter Input : ");
+    # SAFE
+    if (fgets(input, sizeof(input), stdin) == NULL) {
+        printf("Error reading input\n");
+        return;
+    } else {
+        size_t len = strlen(input);
+        if (len > 0 && input[len - 1] == '\n') {
+            input[len - 1] = '\0';
+        }
+    }
+    snprintf(buffer, sizeof(buffer), "%s", input);
+    
+    printf("Copied : %s\n", buffer);
+}
+\end{lstlisting}
+
+\subsection{Integer Overflow}
+
+\subsubsection{Vulnerable Code}
+
+\begin{lstlisting}[language=C, caption=Buffer Overflow – Vulnerable Example, basicstyle=\ttfamily\small, backgroundcolor=\color{gray!10}]
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <inttypes.h>
+
+typedef struct {
+    uint32_t id;
+    uint32_t balance;
+} Account;
+
+static void show(const Account *a){
+     printf("[Account %" PRIu32 "] balance=%" PRIu32 " cents\n", a->id, a->balance);
+}
+
+int deposit(Account *a, uint32_t amount){
+    if((int32_t)amount < 0) return -1;     
+	  a->balance += amount;
+	  return 0;
+}
+
+int withdraw(Account *a, int32_t amount){
+    if (amount <= 0) return -1;
+    uint32_t new_balance = a->balance - amount;
+    if (new_balance < 0) return -2;
+    a->balance = new_balance;
+    return 0; 
+}
+
+int adjust(Account *a, int32_t delta){
+    uint32_t new_balance = a->balance + delta;
+    a->balance = new_balance;
+    return 0;
+}
+
+int main(){
+    Account a = { .id =1, .balance = 1000 };
+    
+    a.balance = 4294967290;
+    show(&a);
+    if(deposit(&a, 10)==0){
+        printf("Success!\n");
+        show(&a);
+    }
+    printf("\n");
+    a.balance = 100;
+    show(&a);
+    if(withdraw(&a, 500) == 0){
+        printf("Success!\n");
+        show(&a);
+    }
+    printf("\n");
+
+    a.balance = 1000;
+    show(&a);
+    if(adjust(&a, -2000) == 0){
+        printf("Success!\n");
+        show(&a);
+    }
+    
+    return 0;
+}
+\end{lstlisting}
+
+\subsubsection{Safe Code}
+
+\begin{lstlisting}[language=C, caption=Buffer Overflow – Vulnerable Example, basicstyle=\ttfamily\small, backgroundcolor=\color{gray!10}]
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <inttypes.h>
+
+typedef struct {
+    uint32_t id;
+    uint32_t balance;
+} Account;
+
+static void show(const Account *a){
+     printf("[Account %" PRIu32 "] balance=%" PRIu32 " cents\n", a->id, a->balance);
+}
+
+int deposit(Account *a, uint32_t amount){
+    if (amount > UINT32_MAX - a->balance) return -1;
+
+    a->balance += amount;
+    return 0;
+}
+
+int withdraw(Account *a, uint32_t amount){
+    if (amount == 0) return -1;
+    
+    if (amount > a->balance) return -2;
+
+    a->balance -= amount;
+    return 0; 
+}
+
+int adjust(Account *a, int32_t delta){
+    if (delta > 0) 
+    {
+        uint32_t udelta = (uint32_t)delta;
+
+        if (udelta > UINT32_MAX - a->balance) return -1;
+    
+        a->balance += udelta;
+    } 
+    else if (delta < 0) 
+    {
+        uint32_t udelta = (uint32_t)(delta);
+
+        if (udelta > a->balance) return -2;
+
+        a->balance -= udelta;   
+    }
+
+    return 0;
+}
+
+int main(){
+    Account a = { .id =1, .balance = 1000 };
+    
+    a.balance = 4294967290;
+    show(&a);
+    if(deposit(&a, 10)==0){
+        printf("Success!\n");
+        show(&a);
+    }
+    printf("\n");
+    a.balance = 100;
+    show(&a);
+    if(withdraw(&a, 500) == 0){
+        printf("Success!\n");
+        show(&a);
+    }
+    printf("\n");
+
+    a.balance = 1000;
+    show(&a);
+    if(adjust(&a, -2000) == 0){
+        printf("Success!\n");
+        show(&a);
+    }
+    
+    return 0;
+}
+\end{lstlisting}
+
+\subsection{Format String Bug}
+
+\subsubsection{Vulnerable Code}
+
+\begin{lstlisting}[language=C, caption=Buffer Overflow – Vulnerable Example, basicstyle=\ttfamily\small, backgroundcolor=\color{gray!10}]
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdarg.h>
+#include <string.h>
+#include <syslog.h>
+
+
+void log_user_input(const char *input){
+    FILE *f = fopen("log.txt","at");
+    if(f){
+        # VULNERABILITY
+        fprintf(f, input);
+        fprintf(f,"\n");
+        fclose(f);
+    }
+    openlog("log", LOG_PID | LOG_CONS, LOG_USER);
+    # VULNERABILITY
+    syslog(LOG_INFO, input);
+    closelog();
+}
+
+int main(int argc, char *argv[]) {
+    if (argc != 2){
+        fprintf(stderr, "Usage: %s <message>\n", argv[0]);
+        return 1;
+    }
+    const char *msg = argv[1];
+    log_user_input(msg);
+    
+    return 0;
+    
+}
+\end{lstlisting}
+
+\subsubsection{Safe Code}
+
+\begin{lstlisting}[language=C, caption=Buffer Overflow – Vulnerable Example, basicstyle=\ttfamily\small, backgroundcolor=\color{gray!10}]
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdarg.h>
+#include <string.h>
+#include <syslog.h>
+
+
+void log_user_input(const char *input){
+    FILE *f = fopen("log.txt","at");
+    if(f){
+        fprintf(f, "%s", input);
+        fprintf(f,"\n");
+        fclose(f);
+    }
+    openlog("log", LOG_PID | LOG_CONS, LOG_USER);
+    syslog(LOG_INFO, "%s", input);
+    closelog();
+}
+
+int main(int argc, char *argv[]) {
+    if (argc != 2){
+        fprintf(stderr, "Usage: %s <message>\n", argv[0]);
+        return 1;
+    }
+    const char *msg = argv[1];
+    log_user_input(msg);
+    
+    return 0;
+    
+}
+\end{lstlisting}
+
+\subsection{Race Condition}
+
+\subsubsection{Vulnerable Code}
+
+\begin{lstlisting}[language=C, caption=Buffer Overflow – Vulnerable Example, basicstyle=\ttfamily\small, backgroundcolor=\color{gray!10}]
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <pthread.h>
+#include <unistd.h>
+#include <time.h>
+
+typedef struct {
+    int ticket_id;
+    int available_seats;
+    int total_sold;
+    char event_name[50];
+} TicketSystem;
+
+TicketSystem concert = {
+    .ticket_id = 1,
+    .available_seats = 10,
+    .total_sold = 0,
+    .event_name = "SECURITY Concert"
+};
+
+typedef struct {
+    int user_id;
+    char name[20];
+} User;
+
+
+void* book_ticket(void* arg) {
+    User *user = (User*)arg;
+    
+    printf("[%s] Checking availability...\n", user->name);
+
+    if (concert.available_seats > 0) {
+        printf("[%s] Found available seat! Processing payment...\n", user->name);
+        usleep(500000); 
+        
+        concert.available_seats--;
+        concert.total_sold++;
+        
+        printf("[%s] ✓ Booking SUCCESS! Remaining seats: %d\n", 
+        user->name, concert.available_seats);
+    } else {
+        printf("[%s] ✗ SOLD OUT!\n", user->name);
+    }
+    
+    return NULL;
+}
+
+void print_info() {
+    printf("Available Seats: %d\n", concert.available_seats);
+    printf("Total Sold: %d\n", concert.total_sold);
+}
+
+int main() {
+    pthread_t threads[20];
+    User users[20];
+    
+    printf("=== Initial State ===\n");
+    print_info();
+    
+    printf("Starting booking...\n\n");
+    
+    for (int i = 0; i < 20; i++) {
+        users[i].user_id = i + 1;
+        snprintf(users[i].name, sizeof(users[i].name), "User%02d", i + 1);
+        pthread_create(&threads[i], NULL, book_ticket, &users[i]);
+    }
+    
+    for (int i = 0; i < 20; i++) {
+        pthread_join(threads[i], NULL);
+    }
+    
+    printf("\n=== Final State ===\n");
+    print_info();
+    
+    printf("Expected: 10 sold, 0 remaining\n");
+    printf("Actual: %d sold, %d remaining\n", concert.total_sold, 
+    concert.available_seats);
+    
+    if (concert.total_sold > 10) {
+        printf("\nOversold by %d tickets!\n", concert.total_sold - 10);
+    }
+    
+    return 0;
+}
+    
+\end{lstlisting}
+
+\subsubsection{Safe Code}
+\begin{lstlisting}[language=C, caption=Buffer Overflow – Vulnerable Example, basicstyle=\ttfamily\small, backgroundcolor=\color{gray!10}]
+#include <stdio.h>
+#include <stdlib.h>
+#include <pthread.h>
+#include <unistd.h>
+#include <time.h>
+
+typedef struct {
+    int ticket_id;
+    int available_seats;
+    int total_sold;
+    char event_name[50];
+} TicketSystem;
+
+TicketSystem concert = {
+    .ticket_id = 1,
+    .available_seats = 10,
+    .total_sold = 0,
+    .event_name = "SECURITY Concert"
+};
+
+#SAFE
+pthread_mutex_t ticket_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+typedef struct {
+    int user_id;
+    char name[20];
+} User;
+
+
+void* book_ticket(void* arg) {
+    User *user = (User*)arg;
+    
+    printf("[%s] Checking availability...\n", user->name);
+
+    #SAFE
+    pthread_mutex_lock(&ticket_mutex);
+
+    if (concert.available_seats > 0) {
+        printf("[%s] Found available seat! Processing payment...\n", user->name);
+        usleep(500000); 
+        
+        concert.available_seats--;
+        concert.total_sold++;
+        
+        printf("[%s] ✓ Booking SUCCESS! Remaining seats: %d\n", user->name, 
+        concert.available_seats);
+    } else {
+        printf("[%s] ✗ SOLD OUT!\n", user->name);
+    }
+
+    #SAFE
+    pthread_mutex_unlock(&ticket_mutex);
+    
+    return NULL;
+}
+
+void print_info() {
+    printf("Available Seats: %d\n", concert.available_seats);
+    printf("Total Sold: %d\n", concert.total_sold);
+}
+
+int main() {
+    pthread_t threads[20];
+    User users[20];
+    
+    printf("=== Initial State ===\n");
+    print_info();
+    
+    printf("Starting booking...\n\n");
+    
+    for (int i = 0; i < 20; i++) {
+        users[i].user_id = i + 1;
+        snprintf(users[i].name, sizeof(users[i].name), "User%02d", i + 1);
+        pthread_create(&threads[i], NULL, book_ticket, &users[i]);
+    }
+    
+    for (int i = 0; i < 20; i++) {
+        pthread_join(threads[i], NULL);
+    }
+    
+    printf("\n=== Final State ===\n");
+    print_info();
+    
+    printf("Expected: 10 sold, 0 remaining\n");
+    printf("Actual: %d sold, %d remaining\n", concert.total_sold, 
+    concert.available_seats);
+    
+    if (concert.total_sold > 10) {
+        printf("\nOversold by %d tickets!\n", concert.total_sold - 10);
+    }
+    
+    return 0;
+}
+\end{lstlisting}
+
+\end{document}
