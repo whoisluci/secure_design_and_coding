@@ -1,0 +1,78 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <inttypes.h>
+
+typedef struct {
+    uint32_t id;
+    uint32_t balance;
+} Account;
+
+static void show(const Account *a){
+     printf("[Account %" PRIu32 "] balance=%" PRIu32 " cents\n", a->id, a->balance);
+}
+
+int deposit(Account *a, uint32_t amount){
+    if (amount > UINT32_MAX - a->balance) return -1;
+
+    a->balance += amount;
+    return 0;
+}
+
+int withdraw(Account *a, uint32_t amount){
+    if (amount == 0) return -1;
+    
+    if (amount > a->balance) return -2;
+
+    a->balance -= amount;
+    return 0; 
+}
+
+int adjust(Account *a, int32_t delta){
+    if (delta > 0) 
+    {
+        uint32_t udelta = (uint32_t)delta;
+
+        if (udelta > UINT32_MAX - a->balance) return -1;
+    
+        a->balance += udelta;
+    } 
+    else if (delta < 0) 
+    {
+        uint32_t udelta = (uint32_t)(delta);
+
+        if (udelta > a->balance) return -2;
+
+        a->balance -= udelta;   
+    }
+
+    return 0;
+}
+
+int main(){
+    Account a = { .id =1, .balance = 1000 };
+    
+    a.balance = 4294967290;
+    show(&a);
+    if(deposit(&a, 10)==0){
+        printf("Success!\n");
+        show(&a);
+    }
+    printf("\n");
+    a.balance = 100;
+    show(&a);
+    if(withdraw(&a, 500) == 0){
+        printf("Success!\n");
+        show(&a);
+    }
+    printf("\n");
+
+    a.balance = 1000;
+    show(&a);
+    if(adjust(&a, -2000) == 0){
+        printf("Success!\n");
+        show(&a);
+    }
+    
+    return 0;
+}
